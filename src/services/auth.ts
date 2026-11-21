@@ -1,8 +1,10 @@
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
+  getRedirectResult,
   signInWithCredential,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type AuthError,
   type OAuthCredential,
@@ -46,11 +48,44 @@ export function extractGoogleCredentialFromError(error: unknown): OAuthCredentia
   return null;
 }
 
-export async function signInWithGoogle(): Promise<GoogleSignInResult> {
+function prefersRedirectSignIn(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const isIOS =
+    /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isInApp = /FBAN|FBAV|Instagram|Line\/|; wv\)/.test(ua);
+  return isIOS || isInApp;
+}
+
+let signInInFlight: Promise<GoogleSignInResult | null> | null = null;
+
+/**
+ * Popup on desktop/Android, redirect on iOS and in-app browsers.
+ * Returns null when a redirect was started (the page will navigate away).
+ * Concurrent calls share a single attempt.
+ */
+export function signInWithGoogle(): Promise<GoogleSignInResult | null> {
+  if (signInInFlight) return signInInFlight;
   assertOAuthClientConfigured();
   googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
-  const result = await signInWithPopup(auth, googleAuthProvider);
-  return extractGoogleCredential(result);
+  signInInFlight = (async () => {
+    try {
+      if (prefersRedirectSignIn()) {
+        await signInWithRedirect(auth, googleAuthProvider);
+        return null;
+      }
+      const result = await signInWithPopup(auth, googleAuthProvider);
+      return extractGoogleCredential(result);
+    } finally {
+      signInInFlight = null;
+    }
+  })();
+  return signInInFlight;
+}
+
+export async function completeRedirectSignIn(): Promise<GoogleSignInResult | null> {
+  const result = await getRedirectResult(auth);
+  return result ? extractGoogleCredential(result) : null;
 }
 
 export async function signInWithGoogleCredential(

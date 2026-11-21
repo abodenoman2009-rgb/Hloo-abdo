@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { browserLocalPersistence, getAuth, GoogleAuthProvider, setPersistence } from 'firebase/auth';
 import {
   doc,
   getDocFromServer,
@@ -7,11 +7,30 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+// On the production host, serve Firebase's auth handler from the same origin
+// (server.ts proxies /__/auth/*). This keeps redirect sign-in working on
+// Safari/iOS, which blocks third-party storage on the firebaseapp.com domain.
+const SAME_ORIGIN_AUTH_HOSTS = new Set(
+  [
+    'hloo-abdo-production.up.railway.app',
+    ...String(import.meta.env.VITE_AUTH_PROXY_HOSTS || '')
+      .split(',')
+      .map((h: string) => h.trim())
+      .filter(Boolean),
+  ]
+);
+const useSameOriginAuth =
+  typeof window !== 'undefined' && SAME_ORIGIN_AUTH_HOSTS.has(window.location.hostname);
+
+const app = initializeApp({
+  ...firebaseConfig,
+  authDomain: useSameOriginAuth ? window.location.host : firebaseConfig.authDomain,
+});
 
 export const oAuthClientId = firebaseConfig.oAuthClientId || '';
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+void setPersistence(auth, browserLocalPersistence).catch(() => undefined);
 export const googleAuthProvider = new GoogleAuthProvider();
 googleAuthProvider.addScope('profile');
 googleAuthProvider.addScope('email');

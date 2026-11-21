@@ -12,6 +12,7 @@ import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   oAuthClientId,
+  completeRedirectSignIn,
   signInWithGoogle,
   signInWithGoogleCredential,
   signOutUser,
@@ -441,6 +442,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Surface errors from a redirect-based sign-in (iOS Safari); success is
+  // handled by the auth state listener below.
+  useEffect(() => {
+    completeRedirectSignIn().catch((err) => {
+      setAuthError(mapFirebaseAuthErrorMessage(err, languageRef.current));
+    });
+  }, []);
+
   // Firebase Auth listener
   useEffect(() => {
     const unsub = subscribeAuthState(async (user) => {
@@ -694,7 +703,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthLoading(true);
     try {
       const result = await signInWithGoogle();
-      if (result.user) {
+      if (result?.user) {
         setFirebaseUser(result.user);
         setIsPreviewMode(false);
         await ensureUserProfileSynced(result.user);

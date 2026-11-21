@@ -23,6 +23,7 @@ export function LoginScreen() {
   const activeError = localError || authError;
 
   const triggerGoogleSignIn = async () => {
+    if (isBusy) return;
     setLocalError(null);
     setSigningIn(true);
     try {

@@ -1,4 +1,5 @@
 import http from 'http';
+import { readFileSync } from 'fs';
 import path from 'path';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -37,6 +38,38 @@ const apiLimiter = rateLimit({
 });
 
 app.use('/api', apiLimiter);
+
+// Same-origin proxy for Firebase's auth handler so redirect sign-in works on
+// Safari/iOS (authDomain is set to this host in src/lib/firebase.ts).
+const FIREBASE_AUTH_HOST = (() => {
+  try {
+    const cfg = JSON.parse(readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+    return String(cfg.authDomain || '');
+  } catch {
+    return '';
+  }
+})();
+
+app.use(['/__/auth', '/__/firebase'], async (req: Request, res: Response) => {
+  if (!FIREBASE_AUTH_HOST || (req.method !== 'GET' && req.method !== 'HEAD')) {
+    res.status(404).end();
+    return;
+  }
+  try {
+    const upstream = await fetch(`https://${FIREBASE_AUTH_HOST}${req.originalUrl}`, {
+      method: req.method,
+      redirect: 'manual',
+    });
+    res.status(upstream.status);
+    for (const h of ['content-type', 'cache-control', 'location']) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch {
+    res.status(502).end();
+  }
+});
 
 interface AuthenticatedRequest extends Request {
   uid?: string;
