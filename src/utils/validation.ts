@@ -154,6 +154,29 @@ export function mapFirebaseAuthErrorMessage(
       ? String((error as { code?: unknown }).code || '')
       : '';
 
+  const m = (ar: string, en: string) => (language === 'ar' ? ar : en);
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return m('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'Incorrect email or password.');
+  }
+  if (code === 'auth/email-already-in-use') {
+    return m('هذا البريد مسجل مسبقاً. سجّل الدخول بدلاً من ذلك.', 'This email is already registered. Sign in instead.');
+  }
+  if (code === 'auth/weak-password') {
+    return m('كلمة المرور ضعيفة. استخدم 6 أحرف على الأقل.', 'Password is too weak. Use at least 6 characters.');
+  }
+  if (code === 'auth/invalid-email') {
+    return m('صيغة البريد الإلكتروني غير صحيحة.', 'The email address is not valid.');
+  }
+  if (code === 'auth/too-many-requests') {
+    return m('محاولات كثيرة. انتظر قليلاً ثم حاول مجدداً.', 'Too many attempts. Wait a moment and try again.');
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return m('تسجيل الدخول بالبريد وكلمة المرور غير مفعّل في Firebase.', 'Email/password sign-in is not enabled in Firebase.');
+  }
+  if (code === 'auth/email-not-verified') {
+    return m('بريدك غير مفعّل. أرسلنا رسالة تفعيل جديدة، افتح الرابط ثم سجّل الدخول.', 'Your email is not verified. We sent a new verification email; open the link, then sign in.');
+  }
+
   if (code === 'auth/popup-blocked') {
     return language === 'ar'
       ? 'تم حظر نافذة تسجيل الدخول المنبثقة. يرجى السماح بالنوافذ المنبثقة والمحاولة مرة أخرى.'

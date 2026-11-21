@@ -1,7 +1,12 @@
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
+  createUserWithEmailAndPassword,
   getRedirectResult,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  updateProfile,
   signInWithCredential,
   signInWithPopup,
   signInWithRedirect,
@@ -112,4 +117,44 @@ export async function signOutUser(): Promise<void> {
 
 export function subscribeAuthState(callback: (user: User | null) => void): Unsubscribe {
   return onAuthStateChanged(auth, callback);
+}
+
+export class EmailNotVerifiedError extends Error {
+  code = 'auth/email-not-verified';
+  constructor() {
+    super('Email not verified');
+  }
+}
+
+/**
+ * Creates an email/password account, sends the verification email and signs
+ * out. Firestore rules require a verified email, so the user signs in after
+ * opening the link.
+ */
+export async function signUpWithEmail(email: string, password: string, displayName: string): Promise<void> {
+  const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  try {
+    if (displayName.trim()) await updateProfile(cred.user, { displayName: displayName.trim() });
+    await sendEmailVerification(cred.user);
+  } finally {
+    await signOut(auth);
+  }
+}
+
+export async function signInWithEmail(email: string, password: string): Promise<User> {
+  const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+  if (!cred.user.emailVerified) {
+    try {
+      await sendEmailVerification(cred.user);
+    } catch {
+      // rate limited; the earlier email is still valid
+    }
+    await signOut(auth);
+    throw new EmailNotVerifiedError();
+  }
+  return cred.user;
+}
+
+export async function sendResetEmail(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
 }
