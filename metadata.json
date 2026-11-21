@@ -1,0 +1,6 @@
+{
+  "name": "Wusul — وصل",
+  "description": "Real-time HD video and voice calling platform powered by WebRTC, WebSocket signaling, and Google Sign-In.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
