@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Globe, Moon, Sun, Video } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { t } from '../i18n/translations';
-import { oAuthClientId, signInWithGoogle } from '../services/auth';
+import { sendResetEmail, signInWithEmail, signUpWithEmail } from '../services/auth';
 import { mapFirebaseAuthErrorMessage, sanitizeRoomCode } from '../utils/validation';
 
 export function LoginScreen() {
@@ -18,16 +18,49 @@ export function LoginScreen() {
   const [roomInput, setRoomInput] = useState('');
   const [signingIn, setSigningIn] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
 
   const isBusy = signingIn || authLoading;
   const activeError = localError || authError;
 
-  const triggerGoogleSignIn = async () => {
+  const handleEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (isBusy) return;
     setLocalError(null);
+    setInfo(null);
     setSigningIn(true);
     try {
-      await signInWithGoogle();
+      if (mode === 'signup') {
+        await signUpWithEmail(email, password, name);
+        setInfo(t(language, 'verifySent'));
+        setMode('signin');
+        setPassword('');
+      } else {
+        await signInWithEmail(email, password);
+      }
+    } catch (err) {
+      setLocalError(mapFirebaseAuthErrorMessage(err, language));
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (isBusy) return;
+    setLocalError(null);
+    setInfo(null);
+    if (!email.trim()) {
+      setLocalError(mapFirebaseAuthErrorMessage({ code: 'auth/invalid-email' }, language));
+      return;
+    }
+    setSigningIn(true);
+    try {
+      await sendResetEmail(email);
+      setInfo(t(language, 'resetSent'));
     } catch (err) {
       setLocalError(mapFirebaseAuthErrorMessage(err, language));
     } finally {
@@ -43,7 +76,6 @@ export function LoginScreen() {
       url.searchParams.set('room', cleaned);
       window.history.replaceState({}, '', url.toString());
     }
-    void triggerGoogleSignIn();
   };
 
   return (
@@ -102,7 +134,7 @@ export function LoginScreen() {
               <span aria-hidden="true">·</span>
               <span>STUN / TURN</span>
               <span aria-hidden="true">·</span>
-              <span>Google OAuth 2.0</span>
+              <span>Email &amp; Password</span>
               <span aria-hidden="true">·</span>
               <span>iPhone &amp; Android Web</span>
             </div>
@@ -112,10 +144,10 @@ export function LoginScreen() {
             <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#131924] p-7 sm:p-8 space-y-6">
               <div className="space-y-2">
                 <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
-                  {t(language, 'continueWithGoogle')}
+                  {t(language, 'emailPasswordTitle')}
                 </h2>
                 <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                  {t(language, 'authNotice')}
+                  {t(language, 'emailPasswordNotice')}
                 </p>
               </div>
 
@@ -128,22 +160,99 @@ export function LoginScreen() {
                 </div>
               )}
 
-              <button
-                type="button"
-                disabled={isBusy || !oAuthClientId}
-                onClick={() => void triggerGoogleSignIn()}
-                className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold text-sm flex items-center justify-center gap-3 transition-colors whitespace-nowrap"
-              >
-                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="currentColor"
-                    d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 16.25 5 12c0-4.1 3.2-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81Z"
+              {info && (
+                <div
+                  role="status"
+                  className="rounded-xl border border-teal-200 dark:border-teal-900/60 bg-teal-50 dark:bg-teal-950/40 px-4 py-3 text-sm text-teal-800 dark:text-teal-300"
+                >
+                  {info}
+                </div>
+              )}
+
+              <form onSubmit={(e) => void handleEmailSubmit(e)} className="space-y-3">
+                {mode === 'signup' && (
+                  <div className="space-y-1">
+                    <label htmlFor="auth-name" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                      {t(language, 'nameLabel')}
+                    </label>
+                    <input
+                      id="auth-name"
+                      type="text"
+                      autoComplete="name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      maxLength={60}
+                      className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0F17] text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+                    />
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label htmlFor="auth-email" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                    {t(language, 'emailLabel')}
+                  </label>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    required
+                    autoComplete="email"
+                    dir="ltr"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0F17] text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
                   />
-                </svg>
-                <span>
-                  {isBusy ? t(language, 'signingIn') : t(language, 'continueWithGoogle')}
-                </span>
-              </button>
+                </div>
+                <div className="space-y-1">
+                  <label htmlFor="auth-password" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                    {t(language, 'passwordLabel')}
+                  </label>
+                  <input
+                    id="auth-password"
+                    type="password"
+                    required
+                    minLength={6}
+                    autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                    dir="ltr"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0F17] text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isBusy}
+                  className="w-full min-h-[48px] px-5 py-3 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold text-sm flex items-center justify-center gap-3 transition-colors whitespace-nowrap"
+                >
+                  <span>
+                    {isBusy
+                      ? t(language, 'signingIn')
+                      : mode === 'signup'
+                        ? t(language, 'signUpBtn')
+                        : t(language, 'signInBtn')}
+                  </span>
+                </button>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode(mode === 'signin' ? 'signup' : 'signin');
+                      setLocalError(null);
+                      setInfo(null);
+                    }}
+                    className="min-h-[36px] text-teal-700 dark:text-teal-400 hover:underline"
+                  >
+                    {mode === 'signin' ? t(language, 'noAccountYet') : t(language, 'haveAccount')}
+                  </button>
+                  {mode === 'signin' && (
+                    <button
+                      type="button"
+                      onClick={() => void handleReset()}
+                      className="min-h-[36px] text-slate-500 dark:text-slate-400 hover:underline"
+                    >
+                      {t(language, 'forgotPassword')}
+                    </button>
+                  )}
+                </div>
+              </form>
 
               <div className="border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3">
                 <form onSubmit={handleRoomSubmit} className="space-y-3">

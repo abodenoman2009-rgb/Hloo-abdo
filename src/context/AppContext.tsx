@@ -453,6 +453,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Firebase Auth listener
   useEffect(() => {
     const unsub = subscribeAuthState(async (user) => {
+      // Firestore rules require a verified email; unverified accounts are signed out by the login flow.
+      if (user && !user.emailVerified) {
+        setAuthReady(true);
+        return;
+      }
       if (user) {
         setFirebaseUser(user);
         setIsPreviewMode(false);
