@@ -28,7 +28,7 @@ export function AppShell() {
     authReady,
     profileReady,
     authError,
-    firebaseUser,
+    sessionUser,
     isPreviewMode,
     publicProfile,
     language,
@@ -41,7 +41,7 @@ export function AppShell() {
 
   const [notifOpen, setNotifOpen] = useState(false);
 
-  if (!authReady || (firebaseUser && !isPreviewMode && !profileReady && !authError)) {
+  if (!authReady || (sessionUser && !isPreviewMode && !profileReady && !authError)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F7F8FA] dark:bg-[#0B0F17]">
         <div className="w-8 h-8 rounded-full border-2 border-teal-600 border-t-transparent animate-spin" />
@@ -49,7 +49,7 @@ export function AppShell() {
     );
   }
 
-  if ((!firebaseUser || (!isPreviewMode && !profileReady)) && !isPreviewMode) {
+  if ((!sessionUser || (!isPreviewMode && !profileReady)) && !isPreviewMode) {
     return <LoginScreen />;
   }
 

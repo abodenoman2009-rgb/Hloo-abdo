@@ -8,7 +8,7 @@ import {
   isValidHandle,
   isValidId,
   isValidRoomCodeFormat,
-  mapFirebaseAuthErrorMessage,
+  mapAuthErrorMessage,
   sanitizeBio,
   sanitizeDisplayName,
   sanitizeHandle,
@@ -54,7 +54,7 @@ test('sanitizeBio and clampDurationSeconds respect blueprint bounds', () => {
   assert.equal(clampDurationSeconds(999999), 86400);
 });
 
-test('buildInitialUserRecords produces blueprint-compliant private and public Firestore docs', () => {
+test('buildInitialUserRecords produces valid private and public profile records', () => {
   const records = buildInitialUserRecords({
     uid: 'googleUid_12345',
     email: 'abodenoman2004@gmail.com',
@@ -84,14 +84,8 @@ test('buildInitialUserRecords produces blueprint-compliant private and public Fi
   assert.equal(sanitizedFallback.privateUser.photoURL, '');
 });
 
-test('mapFirebaseAuthErrorMessage localizes common Google Sign-In failure codes', () => {
-  assert.match(
-    mapFirebaseAuthErrorMessage({ code: 'auth/popup-blocked' }, 'en'),
-    /popup was blocked/i
-  );
-  assert.match(
-    mapFirebaseAuthErrorMessage({ code: 'auth/popup-closed-by-user' }, 'ar'),
-    /إغلاق نافذة/
-  );
+test('mapAuthErrorMessage localizes common sign-in failure codes', () => {
+  assert.match(mapAuthErrorMessage({ code: 'auth/invalid-credential' }, 'en'), /incorrect email or password/i);
+  assert.match(mapAuthErrorMessage({ code: 'auth/email-already-in-use' }, 'ar'), /مسجل مسبقاً/);
 });
 

@@ -9,7 +9,7 @@ import { Avatar } from './Avatar';
 export function ProfileView() {
   const {
     language,
-    firebaseUser,
+    sessionUser,
     privateUser,
     publicProfile,
     devices,
@@ -115,15 +115,6 @@ export function ProfileView() {
                   />
                 </button>
               ))}
-              {firebaseUser?.photoURL && (
-                <button
-                  type="button"
-                  onClick={() => setPhotoURL(firebaseUser.photoURL || '')}
-                  className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  {t(language, 'useGooglePhoto')}
-                </button>
-              )}
             </div>
           </div>
         </div>

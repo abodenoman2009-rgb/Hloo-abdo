@@ -1,4 +1,4 @@
-// Synchronized with firebase-blueprint.json bounds & patterns
+// Field bounds & patterns shared by the client and the server
 
 export const FIELD_LIMITS = {
   UID_MAX: 128,
@@ -145,7 +145,7 @@ export function buildInitialUserRecords(params: {
   };
 }
 
-export function mapFirebaseAuthErrorMessage(
+export function mapAuthErrorMessage(
   error: unknown,
   language: 'ar' | 'en'
 ): string {
@@ -153,55 +153,28 @@ export function mapFirebaseAuthErrorMessage(
     typeof error === 'object' && error !== null && 'code' in error
       ? String((error as { code?: unknown }).code || '')
       : '';
-
   const m = (ar: string, en: string) => (language === 'ar' ? ar : en);
-  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+
+  if (code === 'auth/invalid-credential') {
     return m('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'Incorrect email or password.');
   }
   if (code === 'auth/email-already-in-use') {
     return m('هذا البريد مسجل مسبقاً. سجّل الدخول بدلاً من ذلك.', 'This email is already registered. Sign in instead.');
   }
   if (code === 'auth/weak-password') {
-    return m('كلمة المرور ضعيفة. استخدم 6 أحرف على الأقل.', 'Password is too weak. Use at least 6 characters.');
+    return m('كلمة المرور ضعيفة. استخدم 8 أحرف على الأقل.', 'Password is too weak. Use at least 8 characters.');
   }
   if (code === 'auth/invalid-email') {
     return m('صيغة البريد الإلكتروني غير صحيحة.', 'The email address is not valid.');
   }
-  if (code === 'auth/too-many-requests') {
+  if (code === 'auth/too-many-requests' || code === 'http/429') {
     return m('محاولات كثيرة. انتظر قليلاً ثم حاول مجدداً.', 'Too many attempts. Wait a moment and try again.');
   }
-  if (code === 'auth/operation-not-allowed') {
-    return m('تسجيل الدخول بالبريد وكلمة المرور غير مفعّل في Firebase.', 'Email/password sign-in is not enabled in Firebase.');
-  }
-  if (code === 'auth/email-not-verified') {
-    return m('بريدك غير مفعّل. أرسلنا رسالة تفعيل جديدة، افتح الرابط ثم سجّل الدخول.', 'Your email is not verified. We sent a new verification email; open the link, then sign in.');
-  }
-
-  if (code === 'auth/popup-blocked') {
-    return language === 'ar'
-      ? 'تم حظر نافذة تسجيل الدخول المنبثقة. يرجى السماح بالنوافذ المنبثقة والمحاولة مرة أخرى.'
-      : 'Sign-in popup was blocked by your browser. Please allow popups and try again.';
-  }
-  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-    return language === 'ar'
-      ? 'تم إغلاق نافذة تسجيل الدخول قبل إتمام العملية.'
-      : 'Sign-in popup was closed before completing authentication.';
-  }
   if (code === 'auth/network-request-failed') {
-    return language === 'ar'
-      ? 'تعذر الاتصال بخدمة المصادقة. تحقق من اتصال الإنترنت وحاول مجدداً.'
-      : 'Network error while reaching Google Authentication. Check your connection and try again.';
-  }
-  if (code === 'auth/unauthorized-domain') {
-    return language === 'ar'
-      ? 'النطاق الحالي غير مصرح به في إعدادات مصادقة Firebase لهذا التطبيق.'
-      : 'This domain is not authorized in Firebase Authentication settings for this app.';
+    return m('تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت وحاول مجدداً.', 'Network error. Check your connection and try again.');
   }
 
   return error instanceof Error && error.message
     ? error.message
-    : language === 'ar'
-      ? 'فشل تسجيل الدخول عبر Google.'
-      : 'Google Sign-In failed.';
+    : m('فشل تسجيل الدخول.', 'Sign-in failed.');
 }
-

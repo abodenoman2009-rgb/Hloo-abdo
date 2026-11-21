@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { Globe, Moon, Sun, Video } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { t } from '../i18n/translations';
-import { sendResetEmail, signInWithEmail, signUpWithEmail } from '../services/auth';
-import { mapFirebaseAuthErrorMessage, sanitizeRoomCode } from '../utils/validation';
+import { mapAuthErrorMessage, sanitizeRoomCode } from '../utils/validation';
 
 export function LoginScreen() {
   const {
@@ -13,6 +12,8 @@ export function LoginScreen() {
     setTheme,
     authLoading,
     authError,
+    handleEmailSignIn,
+    handleEmailSignUp,
   } = useApp();
 
   const [roomInput, setRoomInput] = useState('');
@@ -35,34 +36,12 @@ export function LoginScreen() {
     setSigningIn(true);
     try {
       if (mode === 'signup') {
-        await signUpWithEmail(email, password, name);
-        setInfo(t(language, 'verifySent'));
-        setMode('signin');
-        setPassword('');
+        await handleEmailSignUp(email, password, name);
       } else {
-        await signInWithEmail(email, password);
+        await handleEmailSignIn(email, password);
       }
     } catch (err) {
-      setLocalError(mapFirebaseAuthErrorMessage(err, language));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const handleReset = async () => {
-    if (isBusy) return;
-    setLocalError(null);
-    setInfo(null);
-    if (!email.trim()) {
-      setLocalError(mapFirebaseAuthErrorMessage({ code: 'auth/invalid-email' }, language));
-      return;
-    }
-    setSigningIn(true);
-    try {
-      await sendResetEmail(email);
-      setInfo(t(language, 'resetSent'));
-    } catch (err) {
-      setLocalError(mapFirebaseAuthErrorMessage(err, language));
+      setLocalError(mapAuthErrorMessage(err, language));
     } finally {
       setSigningIn(false);
     }
@@ -209,7 +188,7 @@ export function LoginScreen() {
                     id="auth-password"
                     type="password"
                     required
-                    minLength={6}
+                    minLength={8}
                     autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                     dir="ltr"
                     value={password}
@@ -242,15 +221,6 @@ export function LoginScreen() {
                   >
                     {mode === 'signin' ? t(language, 'noAccountYet') : t(language, 'haveAccount')}
                   </button>
-                  {mode === 'signin' && (
-                    <button
-                      type="button"
-                      onClick={() => void handleReset()}
-                      className="min-h-[36px] text-slate-500 dark:text-slate-400 hover:underline"
-                    >
-                      {t(language, 'forgotPassword')}
-                    </button>
-                  )}
                 </div>
               </form>
 

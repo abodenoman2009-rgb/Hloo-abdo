@@ -1,5 +1,4 @@
 import http from 'http';
-import { readFileSync } from 'fs';
 import path from 'path';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -7,7 +6,10 @@ import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import dotenv from 'dotenv';
-import { adminAuth } from './src/lib/firebase-admin.ts';
+import { initDatabase, pool } from './server/db.ts';
+import { authRouter, consumeWsTicket, requireSession } from './server/auth.ts';
+import type { AuthedRequest as AuthenticatedRequest } from './server/auth.ts';
+import { dataRouter } from './server/data.ts';
 import { generateRoomCode } from './src/utils/callLogic.ts';
 import { isValidId, isValidRoomCodeFormat } from './src/utils/validation.ts';
 import type { CallType, IceServerEntry } from './src/types/app.ts';
@@ -39,63 +41,8 @@ const apiLimiter = rateLimit({
 
 app.use('/api', apiLimiter);
 
-// Same-origin proxy for Firebase's auth handler so redirect sign-in works on
-// Safari/iOS (authDomain is set to this host in src/lib/firebase.ts).
-const FIREBASE_AUTH_HOST = (() => {
-  try {
-    const cfg = JSON.parse(readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
-    return String(cfg.authDomain || '');
-  } catch {
-    return '';
-  }
-})();
-
-app.use(['/__/auth', '/__/firebase'], async (req: Request, res: Response) => {
-  if (!FIREBASE_AUTH_HOST || (req.method !== 'GET' && req.method !== 'HEAD')) {
-    res.status(404).end();
-    return;
-  }
-  try {
-    const upstream = await fetch(`https://${FIREBASE_AUTH_HOST}${req.originalUrl}`, {
-      method: req.method,
-      redirect: 'manual',
-    });
-    res.status(upstream.status);
-    for (const h of ['content-type', 'cache-control', 'location']) {
-      const v = upstream.headers.get(h);
-      if (v) res.setHeader(h, v);
-    }
-    res.send(Buffer.from(await upstream.arrayBuffer()));
-  } catch {
-    res.status(502).end();
-  }
-});
-
-interface AuthenticatedRequest extends Request {
-  uid?: string;
-  email?: string;
-}
-
-async function requireFirebaseToken(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Unauthorized: Missing bearer token' });
-    return;
-  }
-  const token = header.slice('Bearer '.length).trim();
-  try {
-    const decoded = await adminAuth.verifyIdToken(token);
-    req.uid = decoded.uid;
-    req.email = decoded.email;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Unauthorized: Invalid token' });
-  }
-}
+app.use('/api/auth', authRouter);
+app.use('/api/data', dataRouter);
 
 function getConfiguredIceServers(): { iceServers: IceServerEntry[]; hasTurn: boolean } {
   const stunUrl = process.env.STUN_SERVER_URL?.trim() || 'stun:stun.l.google.com:19302';
@@ -132,7 +79,7 @@ app.get('/api/ice-servers', (_req: Request, res: Response) => {
   res.json({ iceServers, hasTurn });
 });
 
-app.post('/api/rooms/code', requireFirebaseToken, (_req: AuthenticatedRequest, res: Response) => {
+app.post('/api/rooms/code', requireSession, (_req: AuthenticatedRequest, res: Response) => {
   res.json({ roomCode: generateRoomCode() });
 });
 
@@ -170,7 +117,7 @@ const rooms = new Map<string, Map<string, ConnectedClient>>();
 
 const AuthMessageSchema = z.object({
   type: z.literal('auth'),
-  token: z.string().min(20).max(4096),
+  token: z.string().min(20).max(512),
   displayName: z.string().max(80).optional(),
   photoURL: z.string().max(512).optional(),
 });
@@ -304,14 +251,17 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
       try {
-        const decoded = await adminAuth.verifyIdToken(authCheck.data.token);
+        const uid = consumeWsTicket(authCheck.data.token);
+        if (!uid) throw new Error('bad ticket');
         clearTimeout(authTimeout);
-        const uid = decoded.uid;
+        const prof = (
+          await pool.query('SELECT display_name, photo_url FROM profiles WHERE user_id=$1', [uid])
+        ).rows[0];
         const client: ConnectedClient = {
           ws,
           uid,
-          displayName: authCheck.data.displayName || decoded.name || 'User',
-          photoURL: authCheck.data.photoURL || decoded.picture || '',
+          displayName: prof?.display_name || 'User',
+          photoURL: prof?.photo_url || '',
           busy: false,
           roomCode: null,
           msgCount: 0,
@@ -325,7 +275,7 @@ wss.on('connection', (ws: WebSocket) => {
         sendJson(ws, { type: 'auth:ok', uid, onlineUids: Array.from(socketsByUid.keys()) });
         broadcastPresence();
       } catch {
-        sendJson(ws, { type: 'auth:error', message: 'Token verification failed' });
+        sendJson(ws, { type: 'auth:error', message: 'Authentication failed' });
         ws.close(4003, 'Unauthorized');
       }
       return;
@@ -534,4 +484,14 @@ async function startServer(): Promise<void> {
   });
 }
 
-void startServer();
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Unhandled error', err);
+  if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+});
+
+initDatabase()
+  .then(() => startServer())
+  .catch((err) => {
+    console.error('Startup failed:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
