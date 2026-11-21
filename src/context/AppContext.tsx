@@ -7,23 +7,20 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { User } from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
-  oAuthClientId,
-  completeRedirectSignIn,
-  signInWithGoogle,
-  signInWithGoogleCredential,
+  fetchSession,
+  getWsTicket,
+  signInWithEmail,
   signOutUser,
-  subscribeAuthState,
+  signUpWithEmail,
+  type AppUser,
 } from '../services/auth';
 import {
   appendCallHistoryDoc,
   cancelFriendRequestDoc,
   createCallSessionDoc,
   deleteCallHistoryDoc,
-  ensureAuxProfileDocs,
+  bootstrapUser,
   markNotificationReadDoc,
   removeFriendshipDoc,
   respondFriendRequestDoc,
@@ -37,7 +34,7 @@ import {
   subscribeNotifications,
   updateCallSessionStatusDoc,
   updateUserPreferences,
-} from '../lib/firestoreService';
+} from '../lib/dataService';
 import {
   createIncomingCallSession,
   createOutgoingCallSession,
@@ -45,8 +42,7 @@ import {
   reduceCallSession,
 } from '../utils/callLogic';
 import {
-  buildInitialUserRecords,
-  mapFirebaseAuthErrorMessage,
+  mapAuthErrorMessage,
   sanitizeRoomCode,
 } from '../utils/validation';
 import {
@@ -88,8 +84,7 @@ interface AppContextValue {
   authReady: boolean;
   profileReady: boolean;
   isPreviewMode: boolean;
-  oAuthClientId: string;
-  firebaseUser: User | null;
+  sessionUser: AppUser | null;
   privateUser: UserPrivate | null;
   publicProfile: PublicProfile | null;
   authLoading: boolean;
@@ -100,8 +95,8 @@ interface AppContextValue {
   setActiveTab: (tab: NavTab) => void;
   setLanguage: (lang: Language) => void;
   setTheme: (theme: Theme) => void;
-  handleGoogleSignIn: () => Promise<void>;
-  handleGoogleCredentialSignIn: (idToken: string) => Promise<void>;
+  handleEmailSignIn: (email: string, password: string) => Promise<void>;
+  handleEmailSignUp: (email: string, password: string, displayName: string) => Promise<void>;
   handleSignOut: () => Promise<void>;
   friends: FriendContact[];
   friendRequests: FriendRequestItem[];
@@ -166,7 +161,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [authReady, setAuthReady] = useState(isAutostartPreview);
   const [profileReady, setProfileReady] = useState(isAutostartPreview);
   const [isPreviewMode, setIsPreviewMode] = useState(isAutostartPreview);
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [sessionUser, setSessionUser] = useState<AppUser | null>(null);
   const [privateUser, setPrivateUser] = useState<UserPrivate | null>(
     isAutostartPreview ? PREVIEW_USER : null
   );
@@ -287,21 +282,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setLanguage = useCallback(
     (lang: Language) => {
       setLanguageState(lang);
-      if (firebaseUser && !isPreviewMode) {
-        void updateUserPreferences(firebaseUser.uid, { preferredLanguage: lang }).catch(() => {});
+      if (sessionUser && !isPreviewMode) {
+        void updateUserPreferences(sessionUser.uid, { preferredLanguage: lang }).catch(() => {});
       }
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const setTheme = useCallback(
     (nextTheme: Theme) => {
       setThemeState(nextTheme);
-      if (firebaseUser && !isPreviewMode) {
-        void updateUserPreferences(firebaseUser.uid, { preferredTheme: nextTheme }).catch(() => {});
+      if (sessionUser && !isPreviewMode) {
+        void updateUserPreferences(sessionUser.uid, { preferredTheme: nextTheme }).catch(() => {});
       }
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const stopMediaAndPeer = useCallback(() => {
@@ -377,59 +372,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [sendSignal]
   );
 
-  const ensureUserProfileSynced = useCallback(async (user: User): Promise<void> => {
+  const ensureUserProfileSynced = useCallback(async (user: AppUser): Promise<void> => {
     if (syncInFlightRef.current && syncInFlightRef.current.uid === user.uid) {
       return syncInFlightRef.current.promise;
     }
 
     const promise = (async () => {
-      const userDocPath = `users/${user.uid}`;
-      const initial = buildInitialUserRecords({
-        uid: user.uid,
-        email: user.email,
-        displayName: user.displayName,
-        photoURL: user.photoURL,
-        preferredLanguage: languageRef.current,
-        preferredTheme: themeRef.current,
-      });
-
-      let priv: UserPrivate;
-      let isNewUser = false;
-      try {
-        const userDocRef = doc(db, 'users', user.uid);
-        const userSnap = await getDoc(userDocRef);
-        if (!userSnap.exists()) {
-          isNewUser = true;
-          await setDoc(userDocRef, {
-            ...initial.privateUser,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-          priv = initial.privateUser;
-        } else {
-          const data = userSnap.data() as UserPrivate;
-          priv = {
-            uid: data.uid,
-            email: data.email,
-            displayName: data.displayName,
-            photoURL: data.photoURL,
-            preferredLanguage: data.preferredLanguage || languageRef.current,
-            preferredTheme: data.preferredTheme || themeRef.current,
-          };
-        }
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, userDocPath);
-      }
-
-      const pub = await ensureAuxProfileDocs(user, priv, isNewUser);
+      const { privateUser: priv, publicProfile: pub } = await bootstrapUser(user);
       setPrivateUser(priv);
       setPublicProfile(pub);
       if (priv.preferredLanguage) setLanguageState(priv.preferredLanguage);
       if (priv.preferredTheme) setThemeState(priv.preferredTheme);
       setProfileReady(true);
-      if (isNewUser) {
-        setActiveTab('home');
-      }
     })();
 
     syncInFlightRef.current = { uid: user.uid, promise };
@@ -442,50 +396,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Surface errors from a redirect-based sign-in (iOS Safari); success is
-  // handled by the auth state listener below.
+  // Restore the session (httpOnly cookie) on load.
   useEffect(() => {
-    completeRedirectSignIn().catch((err) => {
-      setAuthError(mapFirebaseAuthErrorMessage(err, languageRef.current));
-    });
-  }, []);
-
-  // Firebase Auth listener
-  useEffect(() => {
-    const unsub = subscribeAuthState(async (user) => {
-      // Firestore rules require a verified email; unverified accounts are signed out by the login flow.
-      if (user && !user.emailVerified) {
-        setAuthReady(true);
-        return;
-      }
-      if (user) {
-        setFirebaseUser(user);
-        setIsPreviewMode(false);
-        setAuthError(null);
-        try {
-          await ensureUserProfileSynced(user);
-        } catch (err) {
-          console.error('Failed syncing user profile:', err);
-          setProfileReady(false);
-          setAuthError(mapFirebaseAuthErrorMessage(err, languageRef.current));
-        }
-      } else {
-        setFirebaseUser(null);
-        if (!isAutostartPreview) {
+    let cancelled = false;
+    (async () => {
+      try {
+        const user = await fetchSession();
+        if (cancelled) return;
+        if (user) {
+          setSessionUser(user);
+          setIsPreviewMode(false);
+          setAuthError(null);
+          try {
+            await ensureUserProfileSynced(user);
+          } catch (err) {
+            console.error('Failed syncing user profile:', err);
+            setProfileReady(false);
+            setAuthError(mapAuthErrorMessage(err, languageRef.current));
+          }
+        } else if (!isAutostartPreview) {
+          setSessionUser(null);
           setPrivateUser(null);
           setPublicProfile(null);
           setProfileReady(false);
         }
+      } catch (err) {
+        if (!cancelled) setAuthError(mapAuthErrorMessage(err, languageRef.current));
+      } finally {
+        if (!cancelled) setAuthReady(true);
       }
-      setAuthReady(true);
-    });
-    return () => unsub();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [ensureUserProfileSynced, isAutostartPreview]);
 
-  // Firestore real-time subscriptions for authenticated users
+  // Live data for authenticated users (polled from the API)
   useEffect(() => {
-    if (!firebaseUser || !profileReady || isPreviewMode) return;
-    const uid = firebaseUser.uid;
+    if (!sessionUser || !profileReady || isPreviewMode) return;
+    const uid = sessionUser.uid;
     const unsubs = [
       subscribeFriendships(uid, setFriends),
       subscribeFriendRequests(uid, setFriendRequests),
@@ -494,18 +443,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       subscribeDevices(uid, setDevices),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [firebaseUser, isPreviewMode, profileReady]);
+  }, [sessionUser, isPreviewMode, profileReady]);
 
   // WebSocket signaling connection for authenticated users
   useEffect(() => {
-    if (!firebaseUser || !profileReady || isPreviewMode) return;
+    if (!sessionUser || !profileReady || isPreviewMode) return;
     let closedByCleanup = false;
     let reconnectTimer: number | null = null;
     let pingTimer: number | null = null;
 
     const connectWs = async () => {
       try {
-        const token = await firebaseUser.getIdToken();
+        const token = await getWsTicket();
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
         wsRef.current = ws;
@@ -515,8 +464,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             JSON.stringify({
               type: 'auth',
               token,
-              displayName: publicProfile?.displayName || firebaseUser.displayName || 'User',
-              photoURL: publicProfile?.photoURL || firebaseUser.photoURL || '',
+              displayName: publicProfile?.displayName || sessionUser.displayName || 'User',
+              photoURL: publicProfile?.photoURL || sessionUser.photoURL || '',
             })
           );
           pingTimer = window.setInterval(() => {
@@ -701,51 +650,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [firebaseUser, isPreviewMode, language, profileReady, publicProfile?.displayName, publicProfile?.photoURL, ringtoneEnabled, sendSignal, setupPeerConnection, showToast, stopMediaAndPeer]);
+  }, [sessionUser, isPreviewMode, language, profileReady, publicProfile?.displayName, publicProfile?.photoURL, ringtoneEnabled, sendSignal, setupPeerConnection, showToast, stopMediaAndPeer]);
 
-  const handleGoogleSignIn = useCallback(async () => {
-    setAuthError(null);
-    setAuthLoading(true);
-    try {
-      const result = await signInWithGoogle();
-      if (result?.user) {
-        setFirebaseUser(result.user);
-        setIsPreviewMode(false);
-        await ensureUserProfileSynced(result.user);
-        setActiveTab('home');
-      }
-    } catch (err) {
-      setAuthError(mapFirebaseAuthErrorMessage(err, languageRef.current));
-    } finally {
-      setAuthLoading(false);
-    }
-  }, [ensureUserProfileSynced]);
+  const finishSignIn = useCallback(
+    async (user: AppUser) => {
+      setSessionUser(user);
+      setIsPreviewMode(false);
+      await ensureUserProfileSynced(user);
+      setActiveTab('home');
+    },
+    [ensureUserProfileSynced]
+  );
 
-  const handleGoogleCredentialSignIn = useCallback(
-    async (idToken: string) => {
+  const handleEmailSignIn = useCallback(
+    async (email: string, password: string) => {
       setAuthError(null);
       setAuthLoading(true);
       try {
-        const result = await signInWithGoogleCredential(idToken);
-        if (result.user) {
-          setFirebaseUser(result.user);
-          setIsPreviewMode(false);
-          await ensureUserProfileSynced(result.user);
-          setActiveTab('home');
-        }
-      } catch (err) {
-        setAuthError(mapFirebaseAuthErrorMessage(err, languageRef.current));
+        await finishSignIn(await signInWithEmail(email, password));
       } finally {
         setAuthLoading(false);
       }
     },
-    [ensureUserProfileSynced]
+    [finishSignIn]
+  );
+
+  const handleEmailSignUp = useCallback(
+    async (email: string, password: string, displayName: string) => {
+      setAuthError(null);
+      setAuthLoading(true);
+      try {
+        const user = await signUpWithEmail(email, password, displayName, {
+          preferredLanguage: languageRef.current,
+          preferredTheme: themeRef.current,
+        });
+        await finishSignIn(user);
+      } finally {
+        setAuthLoading(false);
+      }
+    },
+    [finishSignIn]
   );
 
   const handleSignOut = useCallback(async () => {
     stopMediaAndPeer();
     setActiveCall(null);
-    if (firebaseUser && !isPreviewMode) {
+    if (sessionUser && !isPreviewMode) {
       await signOutUser();
       setProfileReady(false);
       setFriends([]);
@@ -761,7 +711,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setProfileReady(false);
       setActiveTab('home');
     }
-  }, [firebaseUser, isPreviewMode, stopMediaAndPeer]);
+  }, [sessionUser, isPreviewMode, stopMediaAndPeer]);
 
   const startDirectCall = useCallback(
     async (friend: FriendContact, callType: CallType) => {
@@ -783,11 +733,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       await acquireAndBindLocalMedia(callType, 'user');
 
-      if (firebaseUser && !isPreviewMode) {
+      if (sessionUser && !isPreviewMode) {
         void createCallSessionDoc({
           callId,
           roomCode,
-          hostUid: firebaseUser.uid,
+          hostUid: sessionUser.uid,
           hostName: publicProfile?.displayName || 'Host',
           callType,
           isPublicLink: false,
@@ -806,7 +756,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }, 1200);
       }
     },
-    [acquireAndBindLocalMedia, firebaseUser, isPreviewMode, publicProfile?.displayName, ringtoneEnabled, sendSignal]
+    [acquireAndBindLocalMedia, sessionUser, isPreviewMode, publicProfile?.displayName, ringtoneEnabled, sendSignal]
   );
 
   const createShareableRoom = useCallback(
@@ -825,11 +775,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setActiveCall(session);
       await acquireAndBindLocalMedia(callType, 'user');
 
-      if (firebaseUser && !isPreviewMode) {
+      if (sessionUser && !isPreviewMode) {
         void createCallSessionDoc({
           callId,
           roomCode,
-          hostUid: firebaseUser.uid,
+          hostUid: sessionUser.uid,
           hostName: publicProfile?.displayName || 'Host',
           callType,
           isPublicLink: true,
@@ -840,7 +790,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       return roomCode;
     },
-    [acquireAndBindLocalMedia, firebaseUser, isPreviewMode, language, publicProfile?.displayName, sendSignal]
+    [acquireAndBindLocalMedia, sessionUser, isPreviewMode, language, publicProfile?.displayName, sendSignal]
   );
 
   const joinRoomByCode = useCallback(
@@ -860,24 +810,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setActiveCall(session);
       await acquireAndBindLocalMedia(callType, 'user');
 
-      if (firebaseUser && !isPreviewMode) {
+      if (sessionUser && !isPreviewMode) {
         sendSignal({ type: 'room:join', roomCode: cleanCode, callType });
       } else {
         setActiveCall((prev) => reduceCallSession(prev, { type: 'CONNECTED', nowMs: Date.now() }));
       }
     },
-    [acquireAndBindLocalMedia, firebaseUser, isPreviewMode, language, sendSignal]
+    [acquireAndBindLocalMedia, sessionUser, isPreviewMode, language, sendSignal]
   );
 
   // Check URL ?room=CODE when signed in
   useEffect(() => {
-    if (!authReady || (!firebaseUser && !isPreviewMode)) return;
+    if (!authReady || (!sessionUser && !isPreviewMode)) return;
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam && !activeCallRef.current) {
       void joinRoomByCode(roomParam, 'video');
     }
-  }, [authReady, firebaseUser, isPreviewMode, joinRoomByCode]);
+  }, [authReady, sessionUser, isPreviewMode, joinRoomByCode]);
 
   const acceptIncomingCall = useCallback(
     async (asType?: CallType) => {
@@ -888,7 +838,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setActiveCall((prev) => reduceCallSession(prev, { type: 'ACCEPT', callType: nextType }));
       await acquireAndBindLocalMedia(nextType, 'user');
 
-      if (firebaseUser && !isPreviewMode) {
+      if (sessionUser && !isPreviewMode) {
         void updateCallSessionStatusDoc(current.callId, 'active', nextType);
         sendSignal({
           type: 'call:accept',
@@ -901,17 +851,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setActiveCall((prev) => reduceCallSession(prev, { type: 'CONNECTED', nowMs: Date.now() }));
       }
     },
-    [acquireAndBindLocalMedia, firebaseUser, isPreviewMode, sendSignal]
+    [acquireAndBindLocalMedia, sessionUser, isPreviewMode, sendSignal]
   );
 
   const declineIncomingCall = useCallback(() => {
     ringtoneRef.current?.stop();
     const current = activeCallRef.current;
     if (!current) return;
-    if (firebaseUser && !isPreviewMode) {
+    if (sessionUser && !isPreviewMode) {
       void updateCallSessionStatusDoc(current.callId, 'ended');
       sendSignal({ type: 'call:reject', callId: current.callId, toUid: current.peerUid, reason: 'declined' });
-      void appendCallHistoryDoc(firebaseUser.uid, {
+      void appendCallHistoryDoc(sessionUser.uid, {
         peerUid: current.peerUid,
         peerName: current.peerName,
         peerPhoto: current.peerPhoto,
@@ -940,7 +890,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ]);
     }
     setActiveCall(null);
-  }, [firebaseUser, isPreviewMode, sendSignal]);
+  }, [sessionUser, isPreviewMode, sendSignal]);
 
   const endActiveCall = useCallback(() => {
     const current = activeCallRef.current;
@@ -953,7 +903,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const finalStatus: CallHistoryItem['status'] =
       current.startedAtMs !== null ? 'completed' : 'cancelled';
 
-    if (firebaseUser && !isPreviewMode) {
+    if (sessionUser && !isPreviewMode) {
       void updateCallSessionStatusDoc(current.callId, 'ended');
       sendSignal({
         type: 'call:end',
@@ -961,7 +911,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toUid: current.peerUid !== 'room_lobby' ? current.peerUid : undefined,
         roomCode: current.roomCode,
       });
-      void appendCallHistoryDoc(firebaseUser.uid, {
+      void appendCallHistoryDoc(sessionUser.uid, {
         peerUid: current.peerUid,
         peerName: current.peerName,
         peerPhoto: current.peerPhoto,
@@ -990,7 +940,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ]);
     }
     setActiveCall(null);
-  }, [firebaseUser, isPreviewMode, sendSignal, stopMediaAndPeer]);
+  }, [sessionUser, isPreviewMode, sendSignal, stopMediaAndPeer]);
 
   const toggleMute = useCallback(() => {
     const nextMuted = !(activeCallRef.current?.localMuted ?? false);
@@ -1092,7 +1042,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const searchUsers = useCallback(
     async (term: string): Promise<PublicProfile[]> => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         const q = term.trim().toLowerCase();
         return PREVIEW_DIRECTORY.filter(
           (u) =>
@@ -1101,14 +1051,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             u.handle.toLowerCase().includes(q)
         );
       }
-      return searchPublicDirectory(firebaseUser.uid, term);
+      return searchPublicDirectory(sessionUser.uid, term);
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const sendFriendRequest = useCallback(
     async (target: PublicProfile) => {
-      if (isPreviewMode || !firebaseUser || !publicProfile) {
+      if (isPreviewMode || !sessionUser || !publicProfile) {
         setFriendRequests((prev) => [
           {
             id: `req_out_${target.uid}`,
@@ -1131,12 +1081,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await sendFriendRequestDoc(publicProfile, target);
       showToast(language === 'ar' ? 'تم إرسال طلب الصداقة' : 'Friend request sent');
     },
-    [firebaseUser, isPreviewMode, language, publicProfile, showToast]
+    [sessionUser, isPreviewMode, language, publicProfile, showToast]
   );
 
   const respondFriendRequest = useCallback(
     async (req: FriendRequestItem, decision: 'accepted' | 'rejected') => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         setFriendRequests((prev) =>
           prev.map((item) => (item.id === req.id ? { ...item, status: decision } : item))
         );
@@ -1158,58 +1108,58 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       await respondFriendRequestDoc(req, decision);
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const cancelFriendRequest = useCallback(
     async (reqId: string) => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         setFriendRequests((prev) => prev.filter((r) => r.id !== reqId));
         return;
       }
       await cancelFriendRequestDoc(reqId);
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const removeFriend = useCallback(
     async (friendshipId: string) => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         setFriends((prev) => prev.filter((f) => f.friendshipId !== friendshipId));
         return;
       }
       await removeFriendshipDoc(friendshipId);
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const deleteHistoryEntry = useCallback(
     async (id: string) => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         setCallHistory((prev) => prev.filter((h) => h.id !== id));
         return;
       }
-      await deleteCallHistoryDoc(firebaseUser.uid, id);
+      await deleteCallHistoryDoc(sessionUser.uid, id);
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const clearAllHistory = useCallback(async () => {
-    if (isPreviewMode || !firebaseUser) {
+    if (isPreviewMode || !sessionUser) {
       setCallHistory([]);
       return;
     }
-    await Promise.all(callHistory.map((item) => deleteCallHistoryDoc(firebaseUser.uid, item.id)));
-  }, [callHistory, firebaseUser, isPreviewMode]);
+    await Promise.all(callHistory.map((item) => deleteCallHistoryDoc(sessionUser.uid, item.id)));
+  }, [callHistory, sessionUser, isPreviewMode]);
 
   const markAllNotificationsRead = useCallback(async () => {
-    if (isPreviewMode || !firebaseUser) {
+    if (isPreviewMode || !sessionUser) {
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
       return;
     }
     const unread = notifications.filter((n) => !n.read);
-    await Promise.all(unread.map((n) => markNotificationReadDoc(firebaseUser.uid, n.id)));
-  }, [firebaseUser, isPreviewMode, notifications]);
+    await Promise.all(unread.map((n) => markNotificationReadDoc(sessionUser.uid, n.id)));
+  }, [sessionUser, isPreviewMode, notifications]);
 
   const saveProfile = useCallback(
     async (updates: {
@@ -1219,7 +1169,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       photoURL: string;
       isDiscoverable: boolean;
     }) => {
-      if (isPreviewMode || !firebaseUser) {
+      if (isPreviewMode || !sessionUser) {
         setPrivateUser((prev) =>
           prev ? { ...prev, displayName: updates.displayName, photoURL: updates.photoURL } : prev
         );
@@ -1237,7 +1187,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         return;
       }
-      await saveProfileEdits(firebaseUser.uid, updates);
+      await saveProfileEdits(sessionUser.uid, updates);
       setPrivateUser((prev) =>
         prev ? { ...prev, displayName: updates.displayName, photoURL: updates.photoURL } : prev
       );
@@ -1254,15 +1204,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : prev
       );
     },
-    [firebaseUser, isPreviewMode]
+    [sessionUser, isPreviewMode]
   );
 
   const value: AppContextValue = {
     authReady,
     profileReady,
     isPreviewMode,
-    oAuthClientId,
-    firebaseUser,
+    sessionUser,
     privateUser,
     publicProfile,
     authLoading,
@@ -1273,8 +1222,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setActiveTab,
     setLanguage,
     setTheme,
-    handleGoogleSignIn,
-    handleGoogleCredentialSignIn,
+    handleEmailSignIn,
+    handleEmailSignUp,
     handleSignOut,
     friends,
     friendRequests,

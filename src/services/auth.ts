@@ -1,160 +1,43 @@
-import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  createUserWithEmailAndPassword,
-  getRedirectResult,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
-  updateProfile,
-  signInWithCredential,
-  signInWithPopup,
-  signInWithRedirect,
-  signOut,
-  type AuthError,
-  type OAuthCredential,
-  type Unsubscribe,
-  type User,
-  type UserCredential,
-} from 'firebase/auth';
-import { auth, googleAuthProvider, oAuthClientId } from '../lib/firebase';
+import { api, ApiError } from '../lib/api';
 
-export { oAuthClientId };
-
-export interface GoogleSignInResult {
-  user: User;
-  userCredential: UserCredential;
-  credential: OAuthCredential | null;
-  accessToken: string | null;
-  idToken: string | null;
+export interface AppUser {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL: string;
 }
 
-function assertOAuthClientConfigured(): void {
-  if (!oAuthClientId) {
-    throw new Error('Google OAuth Client ID is missing in Firebase configuration.');
+/** Returns the signed-in user for the current session cookie, or null. */
+export async function fetchSession(): Promise<AppUser | null> {
+  try {
+    return await api<AppUser>('/api/auth/me');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
   }
 }
 
-export function extractGoogleCredential(result: UserCredential): GoogleSignInResult {
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  return {
-    user: result.user,
-    userCredential: result,
-    credential,
-    accessToken: credential?.accessToken ?? null,
-    idToken: credential?.idToken ?? null,
-  };
+export async function signUpWithEmail(
+  email: string,
+  password: string,
+  displayName: string,
+  prefs: { preferredLanguage: 'ar' | 'en'; preferredTheme: 'light' | 'dark' }
+): Promise<AppUser> {
+  await api('/api/auth/register', {
+    body: { email: email.trim(), password, displayName: displayName.trim(), ...prefs },
+  });
+  return (await fetchSession()) as AppUser;
 }
 
-export function extractGoogleCredentialFromError(error: unknown): OAuthCredential | null {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    return GoogleAuthProvider.credentialFromError(error as AuthError);
-  }
-  return null;
-}
-
-function prefersRedirectSignIn(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent;
-  const isIOS =
-    /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const isInApp = /FBAN|FBAV|Instagram|Line\/|; wv\)/.test(ua);
-  return isIOS || isInApp;
-}
-
-let signInInFlight: Promise<GoogleSignInResult | null> | null = null;
-
-/**
- * Popup on desktop/Android, redirect on iOS and in-app browsers.
- * Returns null when a redirect was started (the page will navigate away).
- * Concurrent calls share a single attempt.
- */
-export function signInWithGoogle(): Promise<GoogleSignInResult | null> {
-  if (signInInFlight) return signInInFlight;
-  assertOAuthClientConfigured();
-  googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
-  signInInFlight = (async () => {
-    try {
-      if (prefersRedirectSignIn()) {
-        await signInWithRedirect(auth, googleAuthProvider);
-        return null;
-      }
-      const result = await signInWithPopup(auth, googleAuthProvider);
-      return extractGoogleCredential(result);
-    } finally {
-      signInInFlight = null;
-    }
-  })();
-  return signInInFlight;
-}
-
-export async function completeRedirectSignIn(): Promise<GoogleSignInResult | null> {
-  const result = await getRedirectResult(auth);
-  return result ? extractGoogleCredential(result) : null;
-}
-
-export async function signInWithGoogleCredential(
-  idToken: string,
-  accessToken?: string
-): Promise<GoogleSignInResult> {
-  assertOAuthClientConfigured();
-  const cleanIdToken = idToken.trim();
-  const cleanAccessToken = accessToken?.trim();
-  if (!cleanIdToken && !cleanAccessToken) {
-    throw new Error('Google ID token or access token is required for credential sign-in.');
-  }
-  const credential = GoogleAuthProvider.credential(
-    cleanIdToken || null,
-    cleanAccessToken || null
-  );
-  const result = await signInWithCredential(auth, credential);
-  return extractGoogleCredential(result);
+export async function signInWithEmail(email: string, password: string): Promise<AppUser> {
+  await api('/api/auth/login', { body: { email: email.trim(), password } });
+  return (await fetchSession()) as AppUser;
 }
 
 export async function signOutUser(): Promise<void> {
-  await signOut(auth);
+  await api('/api/auth/logout', { method: 'POST', body: {} });
 }
 
-export function subscribeAuthState(callback: (user: User | null) => void): Unsubscribe {
-  return onAuthStateChanged(auth, callback);
-}
-
-export class EmailNotVerifiedError extends Error {
-  code = 'auth/email-not-verified';
-  constructor() {
-    super('Email not verified');
-  }
-}
-
-/**
- * Creates an email/password account, sends the verification email and signs
- * out. Firestore rules require a verified email, so the user signs in after
- * opening the link.
- */
-export async function signUpWithEmail(email: string, password: string, displayName: string): Promise<void> {
-  const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-  try {
-    if (displayName.trim()) await updateProfile(cred.user, { displayName: displayName.trim() });
-    await sendEmailVerification(cred.user);
-  } finally {
-    await signOut(auth);
-  }
-}
-
-export async function signInWithEmail(email: string, password: string): Promise<User> {
-  const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-  if (!cred.user.emailVerified) {
-    try {
-      await sendEmailVerification(cred.user);
-    } catch {
-      // rate limited; the earlier email is still valid
-    }
-    await signOut(auth);
-    throw new EmailNotVerifiedError();
-  }
-  return cred.user;
-}
-
-export async function sendResetEmail(email: string): Promise<void> {
-  await sendPasswordResetEmail(auth, email.trim());
+export async function getWsTicket(): Promise<string> {
+  return (await api<{ ticket: string }>('/api/auth/ws-ticket', { method: 'POST', body: {} })).ticket;
 }
